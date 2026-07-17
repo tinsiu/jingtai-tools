@@ -47,7 +47,13 @@ def fetch_trending(language: str = "", since: str = "daily") -> list[dict]:
         print(f"<!-- error fetching {url}: {e} -->", file=sys.stderr)
         return []
 
-    soup = BeautifulSoup(r.text, "lxml")
+    try:
+        import lxml  # noqa: F401
+        soup = BeautifulSoup(r.text, "lxml")
+    except Exception:
+        # Fallback — html.parser may have edge cases with some HTML
+        from bs4 import BeautifulSoup as BS2
+        soup = BS2(r.text, "html.parser")
     repos = []
     for article in soup.select("article.Box-row"):
         try:
@@ -60,12 +66,22 @@ def fetch_trending(language: str = "", since: str = "daily") -> list[dict]:
             full_name = path.lstrip("/")
             desc_el = article.select_one("p")
             desc = desc_el.get_text(strip=True) if desc_el else ""
-            # star 数（带 k/m 后缀的简写）
+            # 总 star 数
             stars_el = article.select_one("a[href$='/stargazers']")
             stars = parse_count(stars_el.get_text(strip=True)) if stars_el else 0
             # fork 数
-            forks_el = article.select_one("a[href$='/forks']")
+            forks_el = article.select_one("a[href$='/network/members']") or article.select_one("a[href$='/forks']")
             forks = parse_count(forks_el.get_text(strip=True)) if forks_el else 0
+            # 本期增量（since=daily→今日新增, weekly→本周新增）
+            inc_el = None
+            for span in article.find_all("span"):
+                txt = span.get_text(strip=True)
+                if (since == "daily" and "stars today" in txt) or \
+                   (since == "weekly" and "stars this week" in txt):
+                    inc_el = span
+                    break
+            inc_stars = parse_count(inc_el.get_text(strip=True)) if inc_el else 0
+            inc_stars = parse_count(inc_el.get_text(strip=True)) if inc_el else 0
             lang_el = article.select_one("[itemprop='programmingLanguage']")
             lang = lang_el.get_text(strip=True) if lang_el else ""
             repos.append({
@@ -75,6 +91,7 @@ def fetch_trending(language: str = "", since: str = "daily") -> list[dict]:
                 "stars": stars,
                 "forks": forks,
                 "language": lang or language,
+                "inc_stars": inc_stars,
                 "_since": since,
             })
         except Exception as e:
@@ -84,18 +101,30 @@ def fetch_trending(language: str = "", since: str = "daily") -> list[dict]:
 
 
 def parse_count(text: str) -> int:
-    """Parse '1,234' or '12.5k' or '3.4m' to int."""
-    text = text.replace(",", "").strip()
+    """Parse '1,234' or '12.5k' or '3.4m' to int.
+
+    只取开头的数字部分。例: '1,090 stars this week' → 1090, '60 stars today' → 60
+    """
+    import re as _re
+    text = (text or "").replace(",", "").strip()
     if not text:
         return 0
+    m = _re.search(r"[\d.]+", text)
+    if not m:
+        return 0
     try:
-        if text[-1].lower() == "k":
-            return int(float(text[:-1]) * 1000)
-        if text[-1].lower() == "m":
-            return int(float(text[:-1]) * 1_000_000)
-        return int(float(text.split()[0]))
+        num = float(m.group())
     except Exception:
         return 0
+    # 看后面跟什么单位（k/m/b）
+    after = text[m.end():].strip().lower()
+    if after.startswith("k"):
+        num *= 1_000
+    elif after.startswith("m"):
+        num *= 1_000_000
+    elif after.startswith("b"):
+        num *= 1_000_000_000
+    return int(num)
 
 
 def fetch_repo_meta(full_name: str) -> dict:
@@ -173,8 +202,8 @@ def momentum_score(repo: dict) -> tuple[float, dict]:
 def main() -> int:
     print(f"<!-- GitHub Trending v2: top {LIMIT}, languages={LANGUAGES}, since={SINCE_OPTIONS} -->\n")
 
-    # Phase 1: 抓 trending 列表（同时拿 daily + weekly 数据）
-    raw = {}  # name -> {daily_stars, weekly_stars, ...}
+    # Phase 1: 抓 trending 列表（同时拿 daily + weekly 增量数据）
+    raw = {}  # name -> {daily_inc, weekly_inc, total_stars, forks}
     for lang in [""] + LANGUAGES:
         for since in SINCE_OPTIONS:
             for r in fetch_trending(lang, since):
@@ -185,10 +214,14 @@ def main() -> int:
                         "url": r["url"],
                         "description": r["description"],
                         "language": r.get("language") or lang,
-                        "forks_trending": r.get("forks", 0),
+                        "forks": r.get("forks", 0),
+                        "stars": r.get("stars", 0),
                     }
-                key = f"{since}_stars"
-                raw[name][key] = r["stars"]
+                raw[name][f"{since}_inc"] = r.get("inc_stars", 0)
+    # 增量取两个时间窗的最大值（保守估计）
+    for name, r in raw.items():
+        r["daily_stars"] = max(r.get("daily_inc", 0), r.get("weekly_inc", 0) // 7)
+        r["weekly_stars"] = r.get("weekly_inc", 0)
 
     # Phase 2: 每个 repo 调 REST API 拿 last commit / open issues / 真 stars
     metas = {}
@@ -205,8 +238,8 @@ def main() -> int:
             "name": name,
             "url": r["url"],
             "description": r.get("description") or meta.get("description", ""),
-            "stars": meta.get("stars", 0),  # 用 API 真值，不用 trending 页面估值
-            "forks": meta.get("forks", r.get("forks_trending", 0)),
+            "stars": meta.get("stars") or r.get("stars", 0),  # 优先 API 真值
+            "forks": meta.get("forks") or r.get("forks", 0),
             "open_issues": meta.get("open_issues", 0),
             "language": meta.get("language") or r.get("language", ""),
             "topics": meta.get("topics", []),
