@@ -1,0 +1,63 @@
+name: 🤖 AI Tools Curator
+
+on:
+  # 每 6 小时跑一次
+  schedule:
+    - cron: '0 */6 * * *'
+  # 允许手动触发
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '每个源抓取的数量上限'
+        required: false
+        default: '20'
+
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml markdownify
+
+      - name: 🔍 Fetch GitHub Trending
+        run: python scripts/fetch_github_trending.py ${{ github.event.inputs.limit || '20' }} >> output/github_trending.md
+
+      - name: 🚀 Fetch Product Hunt
+        run: python scripts/fetch_producthunt.py ${{ github.event.inputs.limit || '15' }} >> output/producthunt.md
+        env:
+          PH_TOKEN: ${{ secrets.PH_TOKEN }}
+
+      - name: 📰 Fetch Hacker News
+        run: python scripts/fetch_hackernews.py ${{ github.event.inputs.limit || '15' }} >> output/hackernews.md
+
+      - name: ⭐ Fetch awesome-* updates
+        run: python scripts/fetch_awesome.py >> output/awesome.md
+
+      - name: 📝 Format digest
+        run: python scripts/format_digest.py
+
+      - name: 📧 Send email digest
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "[TOOL-FEED] AI Tools Daily — ${{ github.run_id }}"
+          to: "tom@mildign.com"
+          from: "AI Tools Curator <${{ secrets.SMTP_USER }}>"
+          body_path: output/digest.md
+          content_type: text/markdown
+        if: always()
