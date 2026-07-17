@@ -72,5 +72,7 @@ jobs:
             运行 ID：${{ github.run_id }}
             查看完整内容：https://github.com/tinsiu/jingtai-tools/actions/runs/${{ github.run_id }}
 
-            GitHub Action 端只发摘要通知，完整 digest 由 ECS 端 fetch 后入库。
+            完整 digest 见附件 (digest.md)。
+            GitHub Action 端只发摘要通知，完整内容由 ECS 端 fetch 后入库。
+          attachments: output/digest.md
         if: always()
