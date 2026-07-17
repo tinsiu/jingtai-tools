@@ -1,10 +1,8 @@
 name: 🤖 AI Tools Curator
 
 on:
-  # 每 6 小时跑一次
   schedule:
     - cron: '0 */6 * * *'
-  # 允许手动触发
   workflow_dispatch:
     inputs:
       limit:
@@ -31,22 +29,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml markdownify
 
+      - name: 📁 Create output dir
+        run: mkdir -p output
+
       - name: 🔍 Fetch GitHub Trending
-        run: python scripts/fetch_github_trending.py ${{ github.event.inputs.limit || '20' }} >> output/github_trending.md
+        run: python scripts/fetch_github_trending.py ${{ github.event.inputs.limit || '20' }} | tee output/github_trending.md
+        continue-on-error: true
 
       - name: 🚀 Fetch Product Hunt
-        run: python scripts/fetch_producthunt.py ${{ github.event.inputs.limit || '15' }} >> output/producthunt.md
+        run: python scripts/fetch_producthunt.py ${{ github.event.inputs.limit || '15' }} | tee output/producthunt.md
+        continue-on-error: true
         env:
           PH_TOKEN: ${{ secrets.PH_TOKEN }}
 
       - name: 📰 Fetch Hacker News
-        run: python scripts/fetch_hackernews.py ${{ github.event.inputs.limit || '15' }} >> output/hackernews.md
+        run: python scripts/fetch_hackernews.py ${{ github.event.inputs.limit || '15' }} | tee output/hackernews.md
+        continue-on-error: true
 
       - name: ⭐ Fetch awesome-* updates
-        run: python scripts/fetch_awesome.py >> output/awesome.md
+        run: python scripts/fetch_awesome.py | tee output/awesome.md
+        continue-on-error: true
 
       - name: 📝 Format digest
         run: python scripts/format_digest.py
+        continue-on-error: true
 
       - name: 📧 Send email digest
         uses: dawidd6/action-send-mail@v3
@@ -58,6 +64,13 @@ jobs:
           subject: "[TOOL-FEED] AI Tools Daily — ${{ github.run_id }}"
           to: "tom@mildign.com"
           from: "AI Tools Curator <${{ secrets.SMTP_USER }}>"
-          body_path: output/digest.md
-          content_type: text/markdown
+          convert_markdown: true
+          body: |
+            🤖 AI 工具日报已生成！
+
+            时间：${{ github.event.head_commit.timestamp }}
+            运行 ID：${{ github.run_id }}
+            查看完整内容：https://github.com/tinsiu/jingtai-tools/actions/runs/${{ github.run_id }}
+
+            GitHub Action 端只发摘要通知，完整 digest 由 ECS 端 fetch 后入库。
         if: always()
